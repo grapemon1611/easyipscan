@@ -30,7 +30,38 @@ import kotlinx.coroutines.*
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { AppRoot() }
+        setContent { AppEntryPoint() }
+    }
+}
+
+@Composable
+fun AppEntryPoint() {
+    val context = LocalContext.current
+    val appPreferences = remember { AppPreferences(context) }
+    val hasCompletedFirstRun by appPreferences.hasCompletedFirstRun.collectAsState(initial = null)
+    val scope = rememberCoroutineScope()
+
+    // Wait for DataStore to load
+    if (hasCompletedFirstRun == null) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = androidx.compose.ui.graphics.Color(0xFF000099))
+        }
+        return
+    }
+
+    if (hasCompletedFirstRun == false) {
+        FirstRunScreen(
+            onDismiss = {
+                scope.launch {
+                    appPreferences.setFirstRunCompleted()
+                }
+            }
+        )
+    } else {
+        AppRoot()
     }
 }
 
@@ -710,6 +741,19 @@ fun ScanTab() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // Network state tracking
+    var networkState by remember { mutableStateOf(NetworkConnectivity.getNetworkState(context)) }
+    var hasValidLan by remember { mutableStateOf(NetworkConnectivity.hasValidLanConnection(context)) }
+
+    // Refresh network state periodically
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2000)
+            networkState = NetworkConnectivity.getNetworkState(context)
+            hasValidLan = NetworkConnectivity.hasValidLanConnection(context)
+        }
+    }
+
     val mdns = remember { MdnsActiveCache(context) }
     val ssdp = remember { SsdpDiscovery(context) }
     val db = remember { DeviceDatabase(context) }
@@ -1059,80 +1103,88 @@ fun ScanTab() {
 
             if (allDevicesWithState.isEmpty()) {
                 item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 1.dp, horizontal = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Device Status Colors",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                    // Show NoNetworkEmptyState if no LAN connection
+                    if (!hasValidLan) {
+                        NoNetworkEmptyState(
+                            modifier = Modifier.padding(vertical = 32.dp)
                         )
-
-                        Text(
-                            text = "Devices are color-coded to show their current status",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-
+                    } else {
+                        // Normal empty state with legend
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            LegendItemLarge(
-                                color = androidx.compose.ui.graphics.Color(0xFFCFE8FF),
-                                label = "New",
-                                description = "Just discovered on this scan"
-                            )
-                            LegendItemLarge(
-                                color = androidx.compose.ui.graphics.Color(0xFFD7F5DD),
-                                label = "Back Online",
-                                description = "Previously offline, now responding"
-                            )
-                            LegendItemLarge(
-                                color = androidx.compose.ui.graphics.Color(0xFFF5F5F5),
-                                label = "Still Online",
-                                description = "Was online, continues to respond"
-                            )
-                            LegendItemLarge(
-                                color = androidx.compose.ui.graphics.Color(0xFFFDE2E2),
-                                label = "Offline",
-                                description = "Recently went offline (within 7 days)"
-                            )
-                            LegendItemLarge(
-                                color = androidx.compose.ui.graphics.Color(0xFFEEF2F6),
-                                label = "Historical",
-                                description = "Offline for more than 7 days"
-                            )
-                        }
-
-                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 16.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
+                                .padding(vertical = 1.dp, horizontal = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Text(
+                                text = "Device Status Colors",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+
+                            Text(
+                                text = "Devices are color-coded to show their current status",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(
-                                    text = "💡",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    modifier = Modifier.padding(end = 12.dp)
+                                LegendItemLarge(
+                                    color = androidx.compose.ui.graphics.Color(0xFFCFE8FF),
+                                    label = "New",
+                                    description = "Just discovered on this scan"
                                 )
-                                Text(
-                                    text = "Tap \"Start Scan\" above to discover devices on your network",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                LegendItemLarge(
+                                    color = androidx.compose.ui.graphics.Color(0xFFD7F5DD),
+                                    label = "Back Online",
+                                    description = "Previously offline, now responding"
                                 )
+                                LegendItemLarge(
+                                    color = androidx.compose.ui.graphics.Color(0xFFF5F5F5),
+                                    label = "Still Online",
+                                    description = "Was online, continues to respond"
+                                )
+                                LegendItemLarge(
+                                    color = androidx.compose.ui.graphics.Color(0xFFFDE2E2),
+                                    label = "Offline",
+                                    description = "Recently went offline (within 7 days)"
+                                )
+                                LegendItemLarge(
+                                    color = androidx.compose.ui.graphics.Color(0xFFEEF2F6),
+                                    label = "Historical",
+                                    description = "Offline for more than 7 days"
+                                )
+                            }
+
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "💡",
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        modifier = Modifier.padding(end = 12.dp)
+                                    )
+                                    Text(
+                                        text = "Tap \"Start Scan\" above to discover devices on your network",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
                             }
                         }
                     }

@@ -41,6 +41,7 @@ android {
 
 dependencies {
     implementation("org.jmdns:jmdns:3.5.9")
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
