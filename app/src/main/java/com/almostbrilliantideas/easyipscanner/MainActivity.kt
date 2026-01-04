@@ -37,27 +37,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppEntryPoint() {
     val context = LocalContext.current
-    val appPreferences = remember { AppPreferences(context) }
-    val hasCompletedFirstRun by appPreferences.hasCompletedFirstRun.collectAsState(initial = null)
-    val scope = rememberCoroutineScope()
+    var userDismissedWarning by remember { mutableStateOf(false) }
 
-    // Wait for DataStore to load
-    if (hasCompletedFirstRun == null) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            CircularProgressIndicator(color = androidx.compose.ui.graphics.Color(0xFF000099))
-        }
-        return
-    }
+    // Check WiFi status on every launch
+    val hasWifiConnection = remember { NetworkConnectivity.hasValidLanConnection(context) }
 
-    if (hasCompletedFirstRun == false) {
-        FirstRunScreen(
+    // Show warning only if no WiFi AND user hasn't dismissed it this session
+    if (!hasWifiConnection && !userDismissedWarning) {
+        WifiWarningScreen(
+            onOpenSettings = {
+                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+            },
             onDismiss = {
-                scope.launch {
-                    appPreferences.setFirstRunCompleted()
-                }
+                userDismissedWarning = true
             }
         )
     } else {

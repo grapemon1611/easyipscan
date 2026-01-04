@@ -4,7 +4,6 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -21,10 +20,10 @@ import androidx.compose.ui.unit.dp
 private val BrandBlue = Color(0xFF000099)
 
 @Composable
-fun FirstRunScreen(
+fun WifiWarningScreen(
+    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
     val exo2FontFamily = FontFamily(
         Font(R.font.exo2_semibold, FontWeight.SemiBold)
     )
@@ -59,19 +58,19 @@ fun FirstRunScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // WiFi icon
+            // Warning icon
             Icon(
-                imageVector = Icons.Default.Info,
+                imageVector = Icons.Default.Warning,
                 contentDescription = null,
                 modifier = Modifier.size(64.dp),
-                tint = BrandBlue
+                tint = MaterialTheme.colorScheme.error
             )
 
             Spacer(modifier = Modifier.height(24.dp))
 
             // Title
             Text(
-                text = "WiFi or Ethernet Required",
+                text = "No WiFi Connection",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground,
@@ -98,7 +97,7 @@ fun FirstRunScreen(
                         text = "Mobile data cannot access your local network \u2014 WiFi or Ethernet required"
                     )
                     InfoRow(
-                        text = "Connect to WiFi, then launch the app to scan"
+                        text = "Connect to WiFi to scan for devices"
                     )
                 }
             }
@@ -107,9 +106,7 @@ fun FirstRunScreen(
 
             // Primary button - Open WiFi Settings
             Button(
-                onClick = {
-                    context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
-                },
+                onClick = onOpenSettings,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
