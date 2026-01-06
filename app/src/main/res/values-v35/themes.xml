@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base application theme using Material3 for proper edge-to-edge support -->
+    <!-- Android 15+ (SDK 35) theme with enforced edge-to-edge support -->
     <style name="Theme.EasyIPScanner" parent="android:Theme.Material.Light.NoActionBar">
         <!-- Enable edge-to-edge display -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
@@ -9,5 +9,7 @@
         <!-- Ensure content draws behind system bars -->
         <item name="android:windowTranslucentStatus">false</item>
         <item name="android:windowTranslucentNavigation">false</item>
+        <!-- Android 15+ enforced edge-to-edge: explicitly don't opt out -->
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">false</item>
     </style>
 </resources>

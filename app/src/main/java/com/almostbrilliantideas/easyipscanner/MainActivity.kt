@@ -6,6 +6,7 @@ import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.almostbrilliantideas.easyipscanner.ui.theme.EasyIPScannerTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
@@ -35,7 +36,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { AppEntryPoint() }
+        setContent {
+            EasyIPScannerTheme {
+                AppEntryPoint()
+            }
+        }
     }
 }
 
