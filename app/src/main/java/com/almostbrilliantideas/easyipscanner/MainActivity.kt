@@ -6,6 +6,9 @@ import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.almostbrilliantideas.easyipscanner.ui.theme.EasyIPScannerTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ScrollState
@@ -746,10 +749,17 @@ fun startPing(
 fun ScanTab() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     // Network state tracking
     var networkState by remember { mutableStateOf(NetworkConnectivity.getNetworkState(context)) }
     var hasValidLan by remember { mutableStateOf(NetworkConnectivity.hasValidLanConnection(context)) }
+
+    // Network change detection state
+    val appPreferences = remember { AppPreferences(context) }
+    var showNetworkChangeDialog by remember { mutableStateOf(false) }
+    var networkChangeResult by remember { mutableStateOf<NetworkChangeResult?>(null) }
+    var hasCheckedNetworkOnResume by remember { mutableStateOf(false) }
 
     // Refresh network state periodically
     LaunchedEffect(Unit) {
@@ -757,6 +767,43 @@ fun ScanTab() {
             delay(2000)
             networkState = NetworkConnectivity.getNetworkState(context)
             hasValidLan = NetworkConnectivity.hasValidLanConnection(context)
+        }
+    }
+
+    // Check for network change on app resume/foreground
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    val lastScanned = appPreferences.getLastScannedNetworkSync()
+                    if (lastScanned != null) {
+                        val result = NetworkConnectivity.checkNetworkChanged(context, lastScanned)
+                        if (result.hasChanged && hasValidLan) {
+                            networkChangeResult = result
+                            showNetworkChangeDialog = true
+                        }
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // Also check on first composition if we haven't yet
+    LaunchedEffect(hasValidLan) {
+        if (!hasCheckedNetworkOnResume && hasValidLan) {
+            hasCheckedNetworkOnResume = true
+            val lastScanned = appPreferences.getLastScannedNetworkSync()
+            if (lastScanned != null) {
+                val result = NetworkConnectivity.checkNetworkChanged(context, lastScanned)
+                if (result.hasChanged) {
+                    networkChangeResult = result
+                    showNetworkChangeDialog = true
+                }
+            }
         }
     }
 
@@ -888,6 +935,13 @@ fun ScanTab() {
                             }
                         }
 
+                        // Save network info after scan completes
+                        val currentNetwork = NetworkConnectivity.getCurrentNetwork(context)
+                        appPreferences.saveScannedNetwork(
+                            ssid = currentNetwork.ssid,
+                            gatewayIp = currentNetwork.gatewayIp
+                        )
+
                         refreshDeviceList()
 
                         withContext(Dispatchers.Main) {
@@ -944,6 +998,7 @@ fun ScanTab() {
                             showClearConfirmDialog = false
                             scope.launch(Dispatchers.IO) {
                                 db.clearAllDevices()
+                                appPreferences.clearLastScannedNetwork()
                                 refreshDeviceList()
                             }
                         },
@@ -959,6 +1014,146 @@ fun ScanTab() {
                         onClick = { showClearConfirmDialog = false }
                     ) {
                         Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        // Network change detection dialog
+        if (showNetworkChangeDialog && networkChangeResult != null) {
+            val result = networkChangeResult!!
+            val currentNetworkName = result.currentNetwork.ssid ?: result.currentNetwork.gatewayIp ?: "Unknown Network"
+            val previousNetworkName = result.previousSsid ?: result.previousGateway ?: "Previous Network"
+
+            AlertDialog(
+                onDismissRequest = {
+                    showNetworkChangeDialog = false
+                    networkChangeResult = null
+                },
+                title = {
+                    Text(
+                        "Network Changed",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "You've connected to a different network.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "Current Network:",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                )
+                                Text(
+                                    currentNetworkName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                if (result.currentNetwork.gatewayIp != null && result.currentNetwork.ssid != null) {
+                                    Text(
+                                        "Gateway: ${result.currentNetwork.gatewayIp}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            "The saved device list is from \"$previousNetworkName\". Would you like to clear it and scan this network?",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showNetworkChangeDialog = false
+                            networkChangeResult = null
+
+                            // Clear device list and start new scan
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    db.clearAllDevices()
+                                    appPreferences.clearLastScannedNetwork()
+                                }
+                                refreshDeviceList()
+                            }
+
+                            // Trigger a scan
+                            scanning = true
+                            devicesFoundCount = 0
+                            categorizedDevices = emptyMap()
+
+                            if (!wakeLock.isHeld) {
+                                wakeLock.acquire(10 * 60 * 1000L)
+                            }
+
+                            val detected = detectBestCidr(context)
+                            val effectiveCidr = normalizeToNetworkCidr(
+                                candidate = detected ?: "",
+                                fallback = "192.168.1.0/24"
+                            )
+                            cidr = TextFieldValue(effectiveCidr)
+
+                            jobRef.value = scope.launch(Dispatchers.IO) {
+                                scanCidr(effectiveCidr, concurrency, timeoutMs, mdns, ssdp, db) { scanResult ->
+                                    if (scanResult.status != "No response") {
+                                        scope.launch(Dispatchers.Main) {
+                                            devicesFoundCount++
+                                        }
+                                    }
+                                }
+
+                                // Save network info after scan
+                                val currentNetwork = NetworkConnectivity.getCurrentNetwork(context)
+                                appPreferences.saveScannedNetwork(
+                                    ssid = currentNetwork.ssid,
+                                    gatewayIp = currentNetwork.gatewayIp
+                                )
+
+                                refreshDeviceList()
+
+                                withContext(Dispatchers.Main) {
+                                    scanning = false
+                                    if (wakeLock.isHeld) {
+                                        wakeLock.release()
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color(0xFF000099)
+                        )
+                    ) {
+                        Text("Scan New Network")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showNetworkChangeDialog = false
+                            networkChangeResult = null
+                        }
+                    ) {
+                        Text("Keep List")
                     }
                 }
             )
