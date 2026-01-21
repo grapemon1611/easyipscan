@@ -15,6 +15,7 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -50,23 +51,55 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppEntryPoint() {
     val context = LocalContext.current
-    var userDismissedWarning by remember { mutableStateOf(false) }
+    var userDismissedWifiWarning by remember { mutableStateOf(false) }
+    var userDismissedCaptivePortalWarning by remember { mutableStateOf(false) }
 
-    // Check WiFi status on every launch
+    // Check network status on every launch
+    val networkState = remember { NetworkConnectivity.getNetworkState(context) }
     val hasWifiConnection = remember { NetworkConnectivity.hasValidLanConnection(context) }
+    val hasCaptivePortal = networkState == NetworkState.CaptivePortal
 
-    // Show warning only if no WiFi AND user hasn't dismissed it this session
-    if (!hasWifiConnection && !userDismissedWarning) {
-        WifiWarningScreen(
-            onOpenSettings = {
-                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
-            },
-            onDismiss = {
-                userDismissedWarning = true
-            }
-        )
-    } else {
-        AppRoot()
+    when {
+        // Show captive portal warning if detected and not dismissed
+        hasCaptivePortal && !userDismissedCaptivePortalWarning -> {
+            CaptivePortalWarningScreen(
+                onOpenPortalLogin = {
+                    // Open captive portal login page
+                    try {
+                        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                        val network = connectivityManager.activeNetwork
+                        if (network != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                            // Try to open the captive portal app directly (Android 10+)
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                            context.startActivity(intent)
+                        } else {
+                            // Fallback: open WiFi settings
+                            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                        }
+                    } catch (_: Exception) {
+                        // Fallback: open WiFi settings
+                        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                    }
+                },
+                onDismiss = {
+                    userDismissedCaptivePortalWarning = true
+                }
+            )
+        }
+        // Show WiFi warning if no connection and not dismissed
+        !hasWifiConnection && !userDismissedWifiWarning -> {
+            WifiWarningScreen(
+                onOpenSettings = {
+                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                },
+                onDismiss = {
+                    userDismissedWifiWarning = true
+                }
+            )
+        }
+        else -> {
+            AppRoot()
+        }
     }
 }
 
@@ -754,6 +787,7 @@ fun ScanTab() {
     // Network state tracking
     var networkState by remember { mutableStateOf(NetworkConnectivity.getNetworkState(context)) }
     var hasValidLan by remember { mutableStateOf(NetworkConnectivity.hasValidLanConnection(context)) }
+    val hasCaptivePortal = networkState == NetworkState.CaptivePortal
 
     // Network change detection state
     val appPreferences = remember { AppPreferences(context) }
@@ -905,9 +939,54 @@ fun ScanTab() {
             modifier = Modifier.fillMaxWidth()
         )
 
+        // Captive portal warning banner
+        if (hasCaptivePortal) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = androidx.compose.ui.graphics.Color(0xFFFFF3E0) // Light orange
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "⚠️",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Captive Portal Detected",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = androidx.compose.ui.graphics.Color(0xFFE65100)
+                        )
+                        Text(
+                            text = "Complete network login to scan",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = androidx.compose.ui.graphics.Color(0xFFE65100).copy(alpha = 0.8f)
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color(0xFFE65100)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("Login", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                enabled = !scanning,
+                enabled = !scanning && !hasCaptivePortal,
                 onClick = {
                     scanning = true
                     devicesFoundCount = 0
@@ -1304,8 +1383,15 @@ fun ScanTab() {
 
             if (allDevicesWithState.isEmpty()) {
                 item {
-                    // Show NoNetworkEmptyState if no LAN connection
-                    if (!hasValidLan) {
+                    // Show appropriate empty state based on network condition
+                    if (hasCaptivePortal) {
+                        CaptivePortalEmptyState(
+                            modifier = Modifier.padding(vertical = 32.dp),
+                            onOpenPortalLogin = {
+                                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                            }
+                        )
+                    } else if (!hasValidLan) {
                         NoNetworkEmptyState(
                             modifier = Modifier.padding(vertical = 32.dp)
                         )

@@ -9,6 +9,7 @@ sealed class NetworkState {
     data object Connected : NetworkState()
     data object NoNetwork : NetworkState()
     data object MobileDataOnly : NetworkState()
+    data object CaptivePortal : NetworkState()
 }
 
 data class CurrentNetwork(
@@ -30,16 +31,40 @@ object NetworkConnectivity {
         val network = connectivityManager.activeNetwork ?: return NetworkState.NoNetwork
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return NetworkState.NoNetwork
 
+        val isWifiOrEthernet = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+
         return when {
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkState.Connected
-            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkState.Connected
+            isWifiOrEthernet -> {
+                // Check for captive portal - network is connected but requires login
+                val hasCaptivePortal = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+                val isValidated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+
+                when {
+                    hasCaptivePortal -> NetworkState.CaptivePortal
+                    !isValidated -> NetworkState.CaptivePortal // Unvalidated network, likely captive portal
+                    else -> NetworkState.Connected
+                }
+            }
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkState.MobileDataOnly
             else -> NetworkState.NoNetwork
         }
     }
 
+    fun hasCaptivePortal(context: Context): Boolean {
+        return getNetworkState(context) == NetworkState.CaptivePortal
+    }
+
+    fun isNetworkValidated(context: Context): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
     fun hasValidLanConnection(context: Context): Boolean {
         val state = getNetworkState(context)
+        // Must be fully connected (not captive portal) to have valid LAN
         if (state != NetworkState.Connected) return false
 
         // Additional check: verify we can get a valid local IP
