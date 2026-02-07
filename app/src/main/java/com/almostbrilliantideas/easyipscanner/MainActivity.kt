@@ -1,5 +1,6 @@
 package com.almostbrilliantideas.easyipscanner
 
+import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
 import android.os.Build
@@ -104,38 +105,6 @@ class MainActivity : ComponentActivity() {
 
         Log.d("MainActivity", "MainActivity onCreate started")
 
-        // Initialize trial manager with error handling
-        try {
-            Log.d("MainActivity", "Creating TrialManager...")
-            val trialManager = TrialManager(this)
-            Log.d("MainActivity", "TrialManager created successfully")
-
-            lifecycleScope.launch {
-                try {
-                    Log.d("MainActivity", "Calling initializeTrial()...")
-                    val trialData = trialManager.initializeTrial()
-                    Log.d("MainActivity", "initializeTrial() completed: $trialData")
-
-                    val isExpired = trialManager.isTrialExpired()
-                    val isPurchased = trialManager.isPurchased()
-                    Log.d("MainActivity", "Trial status: expired=$isExpired, purchased=$isPurchased")
-
-                    if (isExpired && !isPurchased) {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Trial expired - paywall coming soon",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Error in trial coroutine: ${e.message}", e)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error creating TrialManager: ${e.message}", e)
-        }
-
-        Log.d("MainActivity", "Setting content")
         setContent {
             EasyIPScannerTheme {
                 AppEntryPoint()
@@ -147,8 +116,136 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppEntryPoint() {
     val context = LocalContext.current
+    val activity = context as? Activity
+    val scope = rememberCoroutineScope()
     var userDismissedWifiWarning by remember { mutableStateOf(false) }
     var userDismissedCaptivePortalWarning by remember { mutableStateOf(false) }
+
+    // Trial state
+    var isCheckingTrial by remember { mutableStateOf(true) }
+    var showPaywall by remember { mutableStateOf(false) }
+    val trialManager = remember { TrialManager(context) }
+
+    // Billing state
+    val billingManager = remember { BillingManager(context) }
+    val purchaseResult by billingManager.purchaseResult.collectAsState()
+    val billingIsPurchased by billingManager.isPurchased.collectAsState()
+
+    // Connect to billing on launch
+    LaunchedEffect(Unit) {
+        billingManager.connect()
+    }
+
+    // Clean up billing on dispose
+    DisposableEffect(Unit) {
+        onDispose {
+            billingManager.disconnect()
+        }
+    }
+
+    // Handle purchase result
+    LaunchedEffect(purchaseResult) {
+        when (purchaseResult) {
+            is PurchaseResult.Success -> {
+                trialManager.markAsPurchased()
+                showPaywall = false
+                Toast.makeText(context, "Purchase successful! Thank you!", Toast.LENGTH_LONG).show()
+                billingManager.clearPurchaseResult()
+            }
+            is PurchaseResult.AlreadyOwned -> {
+                trialManager.markAsPurchased()
+                showPaywall = false
+                Toast.makeText(context, "Purchase restored!", Toast.LENGTH_SHORT).show()
+                billingManager.clearPurchaseResult()
+            }
+            is PurchaseResult.Pending -> {
+                Toast.makeText(context, "Purchase pending - will complete shortly", Toast.LENGTH_LONG).show()
+                billingManager.clearPurchaseResult()
+            }
+            is PurchaseResult.Cancelled -> {
+                billingManager.clearPurchaseResult()
+            }
+            is PurchaseResult.Error -> {
+                Toast.makeText(context, (purchaseResult as PurchaseResult.Error).message, Toast.LENGTH_SHORT).show()
+                billingManager.clearPurchaseResult()
+            }
+            null -> {}
+        }
+    }
+
+    // Also watch for billing isPurchased state changes
+    LaunchedEffect(billingIsPurchased) {
+        if (billingIsPurchased) {
+            trialManager.markAsPurchased()
+            showPaywall = false
+        }
+    }
+
+    // Check trial status on launch
+    LaunchedEffect(Unit) {
+        try {
+            trialManager.initializeTrial()
+            val isExpired = trialManager.isTrialExpired()
+            val isPurchased = trialManager.isPurchased()
+            showPaywall = isExpired && !isPurchased
+        } catch (e: Exception) {
+            Log.e("AppEntryPoint", "Error checking trial: ${e.message}", e)
+            showPaywall = false
+        } finally {
+            isCheckingTrial = false
+        }
+    }
+
+    // Show loading while checking trial
+    if (isCheckingTrial) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(androidx.compose.ui.graphics.Color(0xFF000099)),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = androidx.compose.ui.graphics.Color.White)
+        }
+        return
+    }
+
+    // Show paywall if trial expired
+    if (showPaywall) {
+        PaywallScreen(
+            onPurchase = {
+                if (activity != null) {
+                    billingManager.launchPurchaseFlow(activity)
+                } else {
+                    Toast.makeText(context, "Unable to start purchase", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onRestorePurchase = {
+                billingManager.restorePurchases { found ->
+                    scope.launch {
+                        if (found) {
+                            trialManager.markAsPurchased()
+                            showPaywall = false
+                            Toast.makeText(context, "Purchase restored!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            // Also check Firebase as fallback
+                            try {
+                                val firebasePurchased = trialManager.isPurchased()
+                                if (firebasePurchased) {
+                                    showPaywall = false
+                                    Toast.makeText(context, "Purchase restored!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "No purchase found", Toast.LENGTH_SHORT).show()
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "No purchase found", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        return
+    }
 
     // Check network status on every launch
     val networkState = remember { NetworkConnectivity.getNetworkState(context) }
@@ -1735,6 +1832,81 @@ fun LegendItemLarge(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+fun PaywallScreen(
+    onPurchase: () -> Unit,
+    onRestorePurchase: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(androidx.compose.ui.graphics.Color(0xFF000099))
+            .windowInsetsPadding(WindowInsets.systemBars),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                Text(
+                    text = "Trial Expired",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Text(
+                    text = "Your 7-day free trial has ended. Unlock EasyIP Scan with a one-time purchase - no subscriptions, no recurring fees. Pay once, use forever.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Button(
+                    onClick = onPurchase,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = androidx.compose.ui.graphics.Color(0xFF000099)
+                    ),
+                    contentPadding = PaddingValues(vertical = 16.dp)
+                ) {
+                    Text(
+                        text = "Purchase for \$9.99",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onRestorePurchase,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 16.dp)
+                ) {
+                    Text(
+                        text = "Restore Purchase",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+            }
         }
     }
 }

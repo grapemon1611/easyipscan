@@ -1,7 +1,9 @@
 package com.almostbrilliantideas.easyipscanner
 
 import android.content.Context
+import android.util.Log
 import java.net.*
+import javax.net.ssl.SSLException
 
 data class SpeedTestResult(
     val speedMbps: Double,
@@ -151,10 +153,12 @@ suspend fun testWanSpeedWithLiveOutput(
     return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
             onUpdate("🔍 Connecting to speed test server...")
+            Log.d("WanSpeedTest", "Starting WAN speed test...")
 
-            val testUrl = "https://speed.cloudflare.com/__down?bytes=100000000"
+            val testUrl = "https://proof.ovh.net/files/100Mb.dat"
+            Log.d("WanSpeedTest", "Test URL: $testUrl")
 
-            onUpdate("✓ Connected to Cloudflare\n\n📊 Starting download test...\n")
+            onUpdate("✓ Connected to OVH\n\n📊 Starting download test...\n")
             kotlinx.coroutines.delay(500)
 
             val startTime = System.currentTimeMillis()
@@ -164,12 +168,16 @@ suspend fun testWanSpeedWithLiveOutput(
 
             try {
                 val url = java.net.URL(testUrl)
+                Log.d("WanSpeedTest", "Opening connection...")
                 val connection = url.openConnection() as java.net.HttpURLConnection
-                connection.connectTimeout = 5000
+                connection.connectTimeout = 10000
                 connection.readTimeout = 15000
                 connection.requestMethod = "GET"
+                connection.setRequestProperty("User-Agent", "EasyIPScan/1.0")
 
+                Log.d("WanSpeedTest", "Connecting...")
                 connection.connect()
+                Log.d("WanSpeedTest", "Connected! Response code: ${connection.responseCode}")
 
                 val inputStream = connection.inputStream
                 val buffer = ByteArray(8192)
@@ -191,7 +199,7 @@ suspend fun testWanSpeedWithLiveOutput(
                         val dataMB = totalBytesReceived / 1_000_000.0
 
                         onUpdate(
-                            "✓ Cloudflare connected\n" +
+                            "✓ OVH connected\n" +
                                     "\n📊 Download test... ${String.format("%.1f", elapsedSec)}s / 10s\n" +
                                     "━━━━━━━━━━━━━━━━━━━━\n" +
                                     "Downloaded:   ${String.format("%.1f", dataMB)} MB\n" +
@@ -205,9 +213,31 @@ suspend fun testWanSpeedWithLiveOutput(
 
                 inputStream.close()
                 connection.disconnect()
+                Log.d("WanSpeedTest", "Download complete. Total bytes: $totalBytesReceived")
 
+            } catch (e: java.net.UnknownHostException) {
+                Log.e("WanSpeedTest", "DNS resolution failed", e)
+                onUpdate("❌ DNS Error: Cannot resolve server\nCheck internet connection")
+                return@withContext null
+            } catch (e: java.net.SocketTimeoutException) {
+                Log.e("WanSpeedTest", "Connection timed out", e)
+                onUpdate("❌ Connection timed out\nServer may be unreachable")
+                return@withContext null
+            } catch (e: SSLException) {
+                Log.e("WanSpeedTest", "SSL/TLS error", e)
+                onUpdate("❌ SSL Error: ${e.message}\nCheck device date/time settings")
+                return@withContext null
+            } catch (e: java.net.ConnectException) {
+                Log.e("WanSpeedTest", "Connection refused", e)
+                onUpdate("❌ Connection refused\nFirewall may be blocking")
+                return@withContext null
+            } catch (e: java.io.IOException) {
+                Log.e("WanSpeedTest", "IO error during download", e)
+                onUpdate("❌ Network error: ${e.message}")
+                return@withContext null
             } catch (e: Exception) {
-                onUpdate("❌ Download test failed: ${e.message}")
+                Log.e("WanSpeedTest", "Unexpected error: ${e.javaClass.simpleName}", e)
+                onUpdate("❌ Download test failed: ${e.javaClass.simpleName}\n${e.message}")
                 return@withContext null
             }
 
@@ -220,7 +250,7 @@ suspend fun testWanSpeedWithLiveOutput(
                 appendLine("✅ TEST COMPLETE")
                 appendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 appendLine()
-                appendLine("Server:       Cloudflare")
+                appendLine("Server:       OVH")
                 appendLine("Duration:     ${String.format("%.2f", totalElapsedSec)}s")
                 appendLine()
                 appendLine("Downloaded:   ${String.format("%.2f", totalMB)} MB")
@@ -259,7 +289,8 @@ suspend fun testWanSpeedWithLiveOutput(
 
             SpeedTestResult(downloadMbps, detailedOutput)
         } catch (e: Exception) {
-            onUpdate("❌ Error: ${e.message}")
+            Log.e("WanSpeedTest", "Outer exception: ${e.javaClass.simpleName}", e)
+            onUpdate("❌ Error: ${e.javaClass.simpleName}\n${e.message}")
             null
         }
     }

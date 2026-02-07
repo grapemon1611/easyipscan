@@ -64,6 +64,9 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-database-ktx")
 
+    // Google Play Billing
+    implementation("com.android.billingclient:billing-ktx:7.0.0")
+
     implementation("org.jmdns:jmdns:3.5.9")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation(libs.androidx.core.ktx)
