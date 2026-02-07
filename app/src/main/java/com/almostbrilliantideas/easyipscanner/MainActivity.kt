@@ -1,10 +1,19 @@
 package com.almostbrilliantideas.easyipscanner
 
+import android.content.ContentValues
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.PowerManager
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -39,6 +48,54 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
+
+// CSV helper functions
+private fun String.escapeCsv(): String {
+    return if (this.contains(",") || this.contains("\"") || this.contains("\n")) {
+        "\"${this.replace("\"", "\"\"")}\""
+    } else {
+        this
+    }
+}
+
+private fun saveToDownloads(context: Context, fileName: String, content: String): String? {
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+ use MediaStore
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+
+            uri?.let {
+                resolver.openOutputStream(it)?.use { outputStream ->
+                    outputStream.write(content.toByteArray())
+                }
+
+                contentValues.clear()
+                contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+
+                "Downloads/$fileName"
+            }
+        } else {
+            // Android 9 and below
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = File(downloadsDir, fileName)
+            FileOutputStream(file).use { outputStream ->
+                outputStream.write(content.toByteArray())
+            }
+            file.absolutePath
+        }
+    } catch (e: Exception) {
+        Log.e("CSVExport", "Failed to save CSV: ${e.message}", e)
+        null
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1103,6 +1160,54 @@ fun ScanTab() {
             ) {
                 Text("Clear All")
             }
+        }
+
+        Button(
+            enabled = !scanning && categorizedDevices.values.flatten().isNotEmpty(),
+            onClick = {
+                scope.launch(Dispatchers.IO) {
+                    val allDevices = db.getAllDevices()
+                    if (allDevices.isEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "No devices to export", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+
+                    val dateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
+                    val timestamp = dateFormat.format(Date())
+                    val fileName = "EasyIPScan_${timestamp}.csv"
+
+                    val csvContent = buildString {
+                        appendLine("IP,Hostname,MAC,Manufacturer,Status,Response Time")
+                        allDevices.forEach { device ->
+                            val ip = device.ip.escapeCsv()
+                            val hostname = (device.displayName ?: "Unknown").escapeCsv()
+                            val mac = "" // MAC not stored
+                            val manufacturer = (device.vendor ?: "Unknown").escapeCsv()
+                            val status = device.status.escapeCsv()
+                            val lastSeenDate = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(device.lastSeen))
+                            appendLine("$ip,$hostname,$mac,$manufacturer,$status,$lastSeenDate")
+                        }
+                    }
+
+                    val savedPath = saveToDownloads(context, fileName, csvContent)
+
+                    withContext(Dispatchers.Main) {
+                        if (savedPath != null) {
+                            Toast.makeText(context, "Exported to Downloads/$fileName", Toast.LENGTH_LONG).show()
+                        } else {
+                            Toast.makeText(context, "Failed to export CSV", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = androidx.compose.ui.graphics.Color(0xFF000099)
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Export CSV")
         }
 
         if (showClearConfirmDialog) {
