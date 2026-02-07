@@ -3,12 +3,16 @@ package com.almostbrilliantideas.easyipscanner
 import android.content.Context
 import android.os.Bundle
 import android.os.PowerManager
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.almostbrilliantideas.easyipscanner.ui.theme.EasyIPScannerTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ScrollState
@@ -40,6 +44,41 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        Log.d("MainActivity", "MainActivity onCreate started")
+
+        // Initialize trial manager with error handling
+        try {
+            Log.d("MainActivity", "Creating TrialManager...")
+            val trialManager = TrialManager(this)
+            Log.d("MainActivity", "TrialManager created successfully")
+
+            lifecycleScope.launch {
+                try {
+                    Log.d("MainActivity", "Calling initializeTrial()...")
+                    val trialData = trialManager.initializeTrial()
+                    Log.d("MainActivity", "initializeTrial() completed: $trialData")
+
+                    val isExpired = trialManager.isTrialExpired()
+                    val isPurchased = trialManager.isPurchased()
+                    Log.d("MainActivity", "Trial status: expired=$isExpired, purchased=$isPurchased")
+
+                    if (isExpired && !isPurchased) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Trial expired - paywall coming soon",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Error in trial coroutine: ${e.message}", e)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error creating TrialManager: ${e.message}", e)
+        }
+
+        Log.d("MainActivity", "Setting content")
         setContent {
             EasyIPScannerTheme {
                 AppEntryPoint()
