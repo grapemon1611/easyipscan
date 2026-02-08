@@ -386,6 +386,83 @@ fun NoNetworkEmptyState(
             textAlign = TextAlign.Center
         )
 
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "This app requires WiFi and does not work on cellular data.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = {
+                context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+            },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = BrandBlue
+            ),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Text(
+                text = "Open WiFi Settings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+fun MobileDataOnlyEmptyState(
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.Warning,
+            contentDescription = null,
+            modifier = Modifier.size(72.dp),
+            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "Cellular data detected",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "This app requires WiFi and does not work on cellular data.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "Please connect to a WiFi network to scan devices on your LAN.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            textAlign = TextAlign.Center
+        )
+
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(

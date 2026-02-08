@@ -463,6 +463,21 @@ fun SpeedTestTab() {
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
 
+    // Network state tracking
+    var networkState by remember { mutableStateOf(NetworkConnectivity.getNetworkState(context)) }
+    var hasValidLan by remember { mutableStateOf(NetworkConnectivity.hasValidLanConnection(context)) }
+    val hasCaptivePortal = networkState == NetworkState.CaptivePortal
+    val isMobileDataOnly = networkState == NetworkState.MobileDataOnly
+
+    // Refresh network state periodically
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(2000)
+            networkState = NetworkConnectivity.getNetworkState(context)
+            hasValidLan = NetworkConnectivity.hasValidLanConnection(context)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -476,6 +491,25 @@ fun SpeedTestTab() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        // Show network state warnings
+        if (hasCaptivePortal) {
+            CaptivePortalEmptyState(
+                modifier = Modifier.padding(vertical = 16.dp),
+                onOpenPortalLogin = {
+                    context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                }
+            )
+        } else if (isMobileDataOnly) {
+            MobileDataOnlyEmptyState(
+                modifier = Modifier.padding(vertical = 16.dp)
+            )
+        } else if (!hasValidLan) {
+            NoNetworkEmptyState(
+                modifier = Modifier.padding(vertical = 16.dp)
+            )
+        } else {
+            // Normal speed test UI
 
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -765,6 +799,14 @@ fun SpeedTestTab() {
                         MaterialTheme.colorScheme.onSurface
                 )
             }
+        }
+
+            Text(
+                text = "Speed test server located in Michigan. Results reflect real-world performance to a central US location.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 4.dp)
+            )
         }
     }
 }
@@ -1092,6 +1134,19 @@ fun ScanTab() {
         }
         mdnsCount = mdns.names.size
         ssdpCount = ssdp.names.size
+    }
+
+    // Auto-cancel scan if captive portal, mobile data only, or network loss is detected
+    val isMobileDataOnly = networkState == NetworkState.MobileDataOnly
+    LaunchedEffect(scanning, hasCaptivePortal, hasValidLan, isMobileDataOnly) {
+        if (scanning && (hasCaptivePortal || !hasValidLan || isMobileDataOnly)) {
+            // Cancel the running scan
+            jobRef.value?.cancel()
+            scanning = false
+            if (wakeLock.isHeld) {
+                wakeLock.release()
+            }
+        }
     }
 
     suspend fun refreshDeviceList() {
@@ -1631,6 +1686,10 @@ fun ScanTab() {
                             onOpenPortalLogin = {
                                 context.startActivity(android.content.Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
                             }
+                        )
+                    } else if (networkState == NetworkState.MobileDataOnly) {
+                        MobileDataOnlyEmptyState(
+                            modifier = Modifier.padding(vertical = 32.dp)
                         )
                     } else if (!hasValidLan) {
                         NoNetworkEmptyState(

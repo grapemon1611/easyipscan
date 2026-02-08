@@ -3,7 +3,16 @@ package com.almostbrilliantideas.easyipscanner
 import android.content.Context
 import android.util.Log
 import java.net.*
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
 
 data class SpeedTestResult(
     val speedMbps: Double,
@@ -152,68 +161,208 @@ suspend fun testWanSpeedWithLiveOutput(
 ): SpeedTestResult? {
     return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
+            val serverName = "EasyIPScan"
+            val baseUrl = "https://speed.easyipscan.app"
+
             onUpdate("🔍 Connecting to speed test server...")
             Log.d("WanSpeedTest", "Starting WAN speed test...")
 
-            val testUrl = "https://proof.ovh.net/files/100Mb.dat"
-            Log.d("WanSpeedTest", "Test URL: $testUrl")
+            // ============ LATENCY TEST ============
+            onUpdate("📡 Testing latency...")
+            Log.d("WanSpeedTest", "Starting latency test...")
 
-            onUpdate("✓ Connected to OVH\n\n📊 Starting download test...\n")
-            kotlinx.coroutines.delay(500)
-
-            val startTime = System.currentTimeMillis()
-            var totalBytesReceived = 0L
-            var lastUpdateTime = startTime
-            val testDurationMs = 10000L
-
+            var latencyMs: Long = -1
             try {
-                val url = java.net.URL(testUrl)
-                Log.d("WanSpeedTest", "Opening connection...")
-                val connection = url.openConnection() as java.net.HttpURLConnection
-                connection.connectTimeout = 10000
-                connection.readTimeout = 15000
-                connection.requestMethod = "GET"
-                connection.setRequestProperty("User-Agent", "EasyIPScan/1.0")
+                val pingTimes = mutableListOf<Long>()
+                repeat(5) { attempt ->
+                    val pingStart = System.currentTimeMillis()
+                    val pingUrl = java.net.URL("$baseUrl/ping")
+                    val pingConnection = pingUrl.openConnection() as java.net.HttpURLConnection
+                    pingConnection.connectTimeout = 5000
+                    pingConnection.readTimeout = 5000
+                    pingConnection.requestMethod = "GET"
+                    pingConnection.setRequestProperty("User-Agent", "EasyIPScan/1.0")
+                    pingConnection.connect()
+                    val responseCode = pingConnection.responseCode
+                    pingConnection.disconnect()
 
-                Log.d("WanSpeedTest", "Connecting...")
-                connection.connect()
-                Log.d("WanSpeedTest", "Connected! Response code: ${connection.responseCode}")
-
-                val inputStream = connection.inputStream
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-
-                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                    totalBytesReceived += bytesRead
-
-                    val now = System.currentTimeMillis()
-
-                    if (now - startTime >= testDurationMs) {
-                        break
+                    if (responseCode == 204 || responseCode == 200) {
+                        val pingTime = System.currentTimeMillis() - pingStart
+                        pingTimes.add(pingTime)
+                        Log.d("WanSpeedTest", "Ping $attempt: ${pingTime}ms")
                     }
-
-                    if (now - lastUpdateTime >= 500) {
-                        val elapsedSec = (now - startTime) / 1000.0
-                        val megabits = (totalBytesReceived * 8) / 1_000_000.0
-                        val currentMbps = megabits / elapsedSec
-                        val dataMB = totalBytesReceived / 1_000_000.0
-
-                        onUpdate(
-                            "✓ OVH connected\n" +
-                                    "\n📊 Download test... ${String.format("%.1f", elapsedSec)}s / 10s\n" +
-                                    "━━━━━━━━━━━━━━━━━━━━\n" +
-                                    "Downloaded:   ${String.format("%.1f", dataMB)} MB\n" +
-                                    "Speed:        ${String.format("%.1f", currentMbps)} Mbps\n" +
-                                    "━━━━━━━━━━━━━━━━━━━━"
-                        )
-
-                        lastUpdateTime = now
-                    }
+                    kotlinx.coroutines.delay(100)
                 }
 
-                inputStream.close()
-                connection.disconnect()
-                Log.d("WanSpeedTest", "Download complete. Total bytes: $totalBytesReceived")
+                if (pingTimes.isNotEmpty()) {
+                    latencyMs = pingTimes.sorted().let { sorted ->
+                        // Use median for more accurate latency
+                        sorted[sorted.size / 2]
+                    }
+                    Log.d("WanSpeedTest", "Median latency: ${latencyMs}ms")
+                }
+            } catch (e: Exception) {
+                Log.e("WanSpeedTest", "Latency test failed: ${e.message}", e)
+                // Continue with download test even if latency fails
+            }
+
+            val latencyDisplay = if (latencyMs > 0) "${latencyMs}ms" else "N/A"
+            onUpdate("✓ Latency: $latencyDisplay\n\n📊 Starting download test...\n")
+            kotlinx.coroutines.delay(300)
+
+            // ============ DOWNLOAD TEST ============
+            val downloadUrl = "$baseUrl/download/10MB.bin"
+            Log.d("WanSpeedTest", "Download URL: $downloadUrl")
+
+            val numConnections = 8
+            val testDurationMs = 10000L
+            val totalBytesReceived = AtomicLong(0L)
+            val connectionBytes = Array(numConnections) { AtomicLong(0L) }
+            val stopFlag = AtomicBoolean(false)
+            var downloadStartTime = 0L
+
+            // OkHttp client with connection pooling for 8 parallel connections
+            val client = OkHttpClient.Builder()
+                .connectionPool(ConnectionPool(numConnections, 30, TimeUnit.SECONDS))
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .build()
+
+            val request = Request.Builder()
+                .url(downloadUrl)
+                .header("User-Agent", "EasyIPScan/1.0")
+                .build()
+
+            Log.d("WanSpeedTest", "Starting $numConnections parallel download connections...")
+            onUpdate("✓ Latency: $latencyDisplay\n\n📥 Starting $numConnections parallel downloads...\n")
+
+            try {
+                coroutineScope {
+                    // Start time after connections are initiated
+                    downloadStartTime = System.currentTimeMillis()
+
+                    // Launch progress updater
+                    val progressJob = async {
+                        var lastUpdateTime = downloadStartTime
+                        while (!stopFlag.get()) {
+                            kotlinx.coroutines.delay(500)
+                            val now = System.currentTimeMillis()
+                            val elapsed = now - downloadStartTime
+
+                            if (elapsed >= testDurationMs) {
+                                stopFlag.set(true)
+                                break
+                            }
+
+                            val bytes = totalBytesReceived.get()
+                            val elapsedSec = elapsed / 1000.0
+                            val megabits = (bytes * 8) / 1_000_000.0
+                            val currentMbps = megabits / elapsedSec
+                            val dataMB = bytes / 1_000_000.0
+
+                            onUpdate(
+                                "✓ Latency: $latencyDisplay\n" +
+                                        "\n📥 Download test... ${String.format("%.1f", elapsedSec)}s / 10s\n" +
+                                        "━━━━━━━━━━━━━━━━━━━━\n" +
+                                        "Connections:  $numConnections parallel\n" +
+                                        "Downloaded:   ${String.format("%.1f", dataMB)} MB\n" +
+                                        "Speed:        ${String.format("%.1f", currentMbps)} Mbps\n" +
+                                        "━━━━━━━━━━━━━━━━━━━━"
+                            )
+
+                            // Log per-connection stats periodically
+                            val perConnBytes = connectionBytes.mapIndexed { i, ab ->
+                                "C$i: ${String.format("%.1f", ab.get() / 1_000_000.0)}MB"
+                            }.joinToString(", ")
+                            Log.d("WanSpeedTest", "Progress: ${String.format("%.1f", elapsedSec)}s, $perConnBytes, Total: ${String.format("%.1f", dataMB)}MB, Speed: ${String.format("%.1f", currentMbps)} Mbps")
+                            Log.d("WanSpeedTest", "Connection pool: ${client.connectionPool.connectionCount()} total, ${client.connectionPool.idleConnectionCount()} idle")
+
+                            lastUpdateTime = now
+                        }
+                    }
+
+                    // Launch 4 parallel download workers
+                    val downloadJobs = (0 until numConnections).map { connectionId ->
+                        async {
+                            val buffer = ByteArray(64 * 1024)
+                            var iterationCount = 0
+
+                            Log.d("WanSpeedTest", "Connection $connectionId: Starting")
+
+                            while (!stopFlag.get()) {
+                                iterationCount++
+                                try {
+                                    val callStart = System.currentTimeMillis()
+                                    val response = client.newCall(request).execute()
+                                    val callTime = System.currentTimeMillis() - callStart
+
+                                    if (iterationCount == 1) {
+                                        response.handshake?.let { handshake ->
+                                            Log.d("WanSpeedTest", "Connection $connectionId: TLS ${handshake.tlsVersion}, setup ${callTime}ms")
+                                        }
+                                    } else {
+                                        Log.d("WanSpeedTest", "Connection $connectionId: Iteration $iterationCount, request ${callTime}ms (reused)")
+                                    }
+
+                                    if (!response.isSuccessful) {
+                                        Log.e("WanSpeedTest", "Connection $connectionId: HTTP error ${response.code}")
+                                        response.close()
+                                        break
+                                    }
+
+                                    val inputStream = response.body?.byteStream()
+                                    if (inputStream == null) {
+                                        Log.e("WanSpeedTest", "Connection $connectionId: null body")
+                                        response.close()
+                                        break
+                                    }
+
+                                    var bytesRead: Int = 0
+                                    while (!stopFlag.get()) {
+                                        bytesRead = inputStream.read(buffer)
+                                        if (bytesRead == -1) break
+
+                                        totalBytesReceived.addAndGet(bytesRead.toLong())
+                                        connectionBytes[connectionId].addAndGet(bytesRead.toLong())
+
+                                        // Check time limit
+                                        if (System.currentTimeMillis() - downloadStartTime >= testDurationMs) {
+                                            stopFlag.set(true)
+                                            break
+                                        }
+                                    }
+
+                                    response.close()
+
+                                } catch (e: Exception) {
+                                    if (!stopFlag.get()) {
+                                        Log.e("WanSpeedTest", "Connection $connectionId: Error - ${e.javaClass.simpleName}: ${e.message}")
+                                    }
+                                    break
+                                }
+                            }
+
+                            val connMB = connectionBytes[connectionId].get() / 1_000_000.0
+                            Log.d("WanSpeedTest", "Connection $connectionId: Finished after $iterationCount iterations, ${String.format("%.2f", connMB)} MB")
+                            connectionBytes[connectionId].get()
+                        }
+                    }
+
+                    // Wait for all downloads to complete
+                    downloadJobs.awaitAll()
+                    stopFlag.set(true)
+                    progressJob.cancel()
+                }
+
+                val totalBytes = totalBytesReceived.get()
+                val totalMB = totalBytes / 1_000_000.0
+                Log.d("WanSpeedTest", "========== DOWNLOAD TEST SUMMARY ==========")
+                Log.d("WanSpeedTest", "Parallel connections: $numConnections")
+                connectionBytes.forEachIndexed { i, ab ->
+                    Log.d("WanSpeedTest", "  Connection $i: ${String.format("%.2f", ab.get() / 1_000_000.0)} MB")
+                }
+                Log.d("WanSpeedTest", "Total bytes: $totalBytes (${String.format("%.2f", totalMB)} MB)")
+                Log.d("WanSpeedTest", "===========================================")
 
             } catch (e: java.net.UnknownHostException) {
                 Log.e("WanSpeedTest", "DNS resolution failed", e)
@@ -239,22 +388,125 @@ suspend fun testWanSpeedWithLiveOutput(
                 Log.e("WanSpeedTest", "Unexpected error: ${e.javaClass.simpleName}", e)
                 onUpdate("❌ Download test failed: ${e.javaClass.simpleName}\n${e.message}")
                 return@withContext null
+            } finally {
+                client.connectionPool.evictAll()
             }
 
-            val totalElapsedSec = (System.currentTimeMillis() - startTime) / 1000.0
-            val totalMegabits = (totalBytesReceived * 8) / 1_000_000.0
-            val downloadMbps = totalMegabits / totalElapsedSec
-            val totalMB = totalBytesReceived / 1_000_000.0
+            // Safety check: ensure we received data before calculating
+            val totalBytes = totalBytesReceived.get()
+            if (totalBytes == 0L) {
+                onUpdate("❌ No data received from server")
+                return@withContext null
+            }
+
+            val downloadElapsedSec = (System.currentTimeMillis() - downloadStartTime) / 1000.0
+            val downloadMegabits = (totalBytes * 8) / 1_000_000.0
+            val downloadMbps = downloadMegabits / downloadElapsedSec
+            val downloadMB = totalBytes / 1_000_000.0
+
+            // ============ UPLOAD TEST ============
+            onUpdate(
+                "✓ Latency: $latencyDisplay\n" +
+                "✓ Download: ${String.format("%.1f", downloadMbps)} Mbps\n" +
+                "\n📤 Starting upload test...\n"
+            )
+            kotlinx.coroutines.delay(300)
+
+            var uploadMbps = 0.0
+            var uploadMB = 0.0
+            val uploadUrl = "$baseUrl/upload"
+            Log.d("WanSpeedTest", "Starting upload test to: $uploadUrl")
+
+            try {
+                val uploadStartTime = System.currentTimeMillis()
+                var totalBytesSent = 0L
+                var uploadLastUpdateTime = uploadStartTime
+                val uploadTestDurationMs = 10000L
+                val uploadBuffer = ByteArray(64 * 1024) // 64KB chunks
+
+                val url = java.net.URL(uploadUrl)
+                val connection = url.openConnection() as java.net.HttpURLConnection
+                connection.connectTimeout = 10000
+                connection.readTimeout = 15000
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setRequestProperty("User-Agent", "EasyIPScan/1.0")
+                connection.setRequestProperty("Content-Type", "application/octet-stream")
+                connection.setChunkedStreamingMode(uploadBuffer.size)
+
+                Log.d("WanSpeedTest", "Opening upload connection...")
+                val outputStream = connection.outputStream
+
+                while (System.currentTimeMillis() - uploadStartTime < uploadTestDurationMs) {
+                    try {
+                        outputStream.write(uploadBuffer)
+                        totalBytesSent += uploadBuffer.size
+
+                        val now = System.currentTimeMillis()
+                        if (now - uploadLastUpdateTime >= 500) {
+                            val elapsedSec = (now - uploadStartTime) / 1000.0
+                            val megabits = (totalBytesSent * 8) / 1_000_000.0
+                            val currentMbps = megabits / elapsedSec
+                            val dataMB = totalBytesSent / 1_000_000.0
+
+                            onUpdate(
+                                "✓ Latency: $latencyDisplay\n" +
+                                "✓ Download: ${String.format("%.1f", downloadMbps)} Mbps\n" +
+                                "\n📤 Upload test... ${String.format("%.1f", elapsedSec)}s / 10s\n" +
+                                "━━━━━━━━━━━━━━━━━━━━\n" +
+                                "Uploaded:     ${String.format("%.1f", dataMB)} MB\n" +
+                                "Speed:        ${String.format("%.1f", currentMbps)} Mbps\n" +
+                                "━━━━━━━━━━━━━━━━━━━━"
+                            )
+
+                            uploadLastUpdateTime = now
+                        }
+                    } catch (e: Exception) {
+                        Log.w("WanSpeedTest", "Upload write error: ${e.message}")
+                        break
+                    }
+                }
+
+                outputStream.flush()
+                outputStream.close()
+
+                // Read server response (if any)
+                try {
+                    val responseCode = connection.responseCode
+                    Log.d("WanSpeedTest", "Upload response code: $responseCode")
+                } catch (e: Exception) {
+                    Log.w("WanSpeedTest", "Could not read upload response: ${e.message}")
+                }
+
+                connection.disconnect()
+
+                val uploadElapsedSec = (System.currentTimeMillis() - uploadStartTime) / 1000.0
+                val uploadMegabits = (totalBytesSent * 8) / 1_000_000.0
+                uploadMbps = uploadMegabits / uploadElapsedSec
+                uploadMB = totalBytesSent / 1_000_000.0
+                Log.d("WanSpeedTest", "Upload complete. Total bytes: $totalBytesSent, Speed: ${String.format("%.1f", uploadMbps)} Mbps")
+
+            } catch (e: Exception) {
+                Log.e("WanSpeedTest", "Upload test failed: ${e.message}", e)
+                // Continue without upload results
+            }
+
+            val uploadDisplay = if (uploadMbps > 0) "${String.format("%.1f", uploadMbps)} Mbps" else "N/A"
 
             val detailedOutput = buildString {
                 appendLine("✅ TEST COMPLETE")
                 appendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 appendLine()
-                appendLine("Server:       OVH")
-                appendLine("Duration:     ${String.format("%.2f", totalElapsedSec)}s")
+                appendLine("Server:       $serverName")
                 appendLine()
-                appendLine("Downloaded:   ${String.format("%.2f", totalMB)} MB")
-                appendLine("Speed:        ${String.format("%.1f", downloadMbps)} Mbps")
+                appendLine("Latency:      $latencyDisplay")
+                appendLine("Download:     ${String.format("%.1f", downloadMbps)} Mbps")
+                appendLine("Upload:       $uploadDisplay")
+                appendLine()
+                appendLine("Downloaded:   ${String.format("%.2f", downloadMB)} MB")
+                if (uploadMbps > 0) {
+                    appendLine("Uploaded:     ${String.format("%.2f", uploadMB)} MB")
+                }
                 appendLine()
                 appendLine("Rating:       ${getWanRating(downloadMbps)}")
                 appendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
