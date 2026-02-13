@@ -70,8 +70,14 @@ class TrialManager(private val context: Context) {
         )
 
         Log.d(TAG, "initializeTrial: Saving new trial data to Firebase...")
-        userRef.setValue(trialData.toMap()).await()
-        Log.d(TAG, "initializeTrial: Trial data saved successfully")
+        try {
+            userRef.setValue(trialData.toMap()).await()
+            Log.d(TAG, "initializeTrial: Trial data saved successfully to Firebase")
+        } catch (e: Exception) {
+            // Firebase write failed, but continue with local trial data
+            // The app can still function - trial will be re-initialized on next launch if needed
+            Log.w(TAG, "initializeTrial: Firebase write failed (non-fatal): ${e.message}")
+        }
         return trialData
     }
 
@@ -101,8 +107,15 @@ class TrialManager(private val context: Context) {
 
     suspend fun markAsPurchased() {
         Log.d(TAG, "markAsPurchased: Marking user as purchased...")
-        userRef.child(KEY_PURCHASED).setValue(true).await()
-        Log.d(TAG, "markAsPurchased: Purchase status saved successfully")
+        try {
+            userRef.child(KEY_PURCHASED).setValue(true).await()
+            Log.d(TAG, "markAsPurchased: Purchase status saved successfully to Firebase")
+        } catch (e: Exception) {
+            // Firebase write failed (likely permission denied), but that's OK
+            // Google Play Billing has already verified the purchase
+            // Firebase is just a backup sync mechanism
+            Log.w(TAG, "markAsPurchased: Firebase write failed (non-fatal): ${e.message}")
+        }
     }
 
     suspend fun isPurchased(): Boolean {
