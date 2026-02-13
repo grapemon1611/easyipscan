@@ -298,7 +298,29 @@ fun AppEntryPoint() {
                 activity = activity,
                 billingManager = billingManager,
                 isPurchased = billingIsPurchased,
-                productPrice = productPrice
+                productPrice = productPrice,
+                onRestorePurchase = {
+                    billingManager.restorePurchases { found ->
+                        scope.launch {
+                            if (found) {
+                                trialManager.markAsPurchased()
+                                Toast.makeText(context, "Purchase restored!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                // Also check Firebase as fallback
+                                try {
+                                    val firebasePurchased = trialManager.isPurchased()
+                                    if (firebasePurchased) {
+                                        Toast.makeText(context, "Purchase restored!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "No purchase found", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "No purchase found", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
+                }
             )
         }
     }
@@ -309,7 +331,8 @@ fun AppRoot(
     activity: Activity?,
     billingManager: BillingManager,
     isPurchased: Boolean,
-    productPrice: String?
+    productPrice: String?,
+    onRestorePurchase: () -> Unit = {}
 ) {
     var tabIndex by remember { mutableStateOf(0) }
     var toolsClickCounter by remember { mutableStateOf(0) }
@@ -360,7 +383,8 @@ fun AppRoot(
                 productPrice = productPrice,
                 onPurchaseClick = {
                     activity?.let { billingManager.launchPurchaseFlow(it) }
-                }
+                },
+                onRestorePurchase = onRestorePurchase
             )
         }
     }
@@ -371,7 +395,8 @@ fun ToolsTab(
     resetTrigger: Int = 0,
     isPurchased: Boolean = false,
     productPrice: String? = null,
-    onPurchaseClick: () -> Unit = {}
+    onPurchaseClick: () -> Unit = {},
+    onRestorePurchase: () -> Unit = {}
 ) {
     var selectedTool by remember { mutableStateOf<String?>(null) }
 
@@ -438,6 +463,14 @@ fun ToolsTab(
                     UnlockMenuItem(
                         price = productPrice ?: "One-time purchase",
                         onClick = onPurchaseClick
+                    )
+
+                    // Restore Purchases - also only show if NOT purchased
+                    ToolMenuItem(
+                        title = "Restore Purchases",
+                        description = "Already purchased? Restore on this device",
+                        enabled = true,
+                        onClick = onRestorePurchase
                     )
                 }
 
