@@ -27,6 +27,10 @@ class AppPreferences(private val context: Context) {
         private val LAST_SCANNED_SSID = stringPreferencesKey("last_scanned_ssid")
         private val LAST_SCANNED_GATEWAY = stringPreferencesKey("last_scanned_gateway")
         private val LAST_SCAN_TIMESTAMP = longPreferencesKey("last_scan_timestamp")
+
+        // Purchase state caching for offline fallback
+        private val IS_PURCHASED = booleanPreferencesKey("is_purchased")
+        private val PURCHASE_TIMESTAMP = longPreferencesKey("purchase_timestamp")
     }
 
     val hasCompletedFirstRun: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -77,5 +81,48 @@ class AppPreferences(private val context: Context) {
             preferences.remove(LAST_SCANNED_GATEWAY)
             preferences.remove(LAST_SCAN_TIMESTAMP)
         }
+    }
+
+    // ==================== Purchase State Caching ====================
+
+    /**
+     * Observable flow of purchase state.
+     * Use this for reactive UI updates.
+     */
+    val isPurchased: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[IS_PURCHASED] ?: false
+    }
+
+    /**
+     * Synchronously get cached purchase state.
+     * Use for immediate checks (e.g., on app launch before Firebase loads).
+     */
+    suspend fun getIsPurchasedSync(): Boolean {
+        return isPurchased.first()
+    }
+
+    /**
+     * Save purchase state to local cache.
+     * Called after successful purchase acknowledgment or on restore.
+     *
+     * @param purchased True if purchased, false if refunded
+     */
+    suspend fun setIsPurchased(purchased: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[IS_PURCHASED] = purchased
+            if (purchased) {
+                preferences[PURCHASE_TIMESTAMP] = System.currentTimeMillis()
+            } else {
+                preferences.remove(PURCHASE_TIMESTAMP)
+            }
+        }
+    }
+
+    /**
+     * Get the timestamp when purchase was cached locally.
+     * Useful for debugging/logging.
+     */
+    suspend fun getPurchaseTimestamp(): Long? {
+        return context.dataStore.data.first()[PURCHASE_TIMESTAMP]
     }
 }

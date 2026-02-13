@@ -125,11 +125,13 @@ fun AppEntryPoint() {
     var isCheckingTrial by remember { mutableStateOf(true) }
     var showPaywall by remember { mutableStateOf(false) }
     val trialManager = remember { TrialManager(context) }
+    val appPreferences = remember { AppPreferences(context) }
 
-    // Billing state
-    val billingManager = remember { BillingManager(context) }
+    // Billing state - pass dependencies for Firebase sync and local caching
+    val billingManager = remember { BillingManager(context, trialManager, appPreferences) }
     val purchaseResult by billingManager.purchaseResult.collectAsState()
     val billingIsPurchased by billingManager.isPurchased.collectAsState()
+    val productPrice by billingManager.productPrice.collectAsState()
 
     // Connect to billing on launch
     LaunchedEffect(Unit) {
@@ -212,6 +214,7 @@ fun AppEntryPoint() {
     // Show paywall if trial expired
     if (showPaywall) {
         PaywallScreen(
+            price = productPrice ?: "$9.99",
             onPurchase = {
                 if (activity != null) {
                     billingManager.launchPurchaseFlow(activity)
@@ -291,13 +294,23 @@ fun AppEntryPoint() {
             )
         }
         else -> {
-            AppRoot()
+            AppRoot(
+                activity = activity,
+                billingManager = billingManager,
+                isPurchased = billingIsPurchased,
+                productPrice = productPrice
+            )
         }
     }
 }
 
 @Composable
-fun AppRoot() {
+fun AppRoot(
+    activity: Activity?,
+    billingManager: BillingManager,
+    isPurchased: Boolean,
+    productPrice: String?
+) {
     var tabIndex by remember { mutableStateOf(0) }
     var toolsClickCounter by remember { mutableStateOf(0) }
     val tabs = listOf("Scan Network", "Tools")
@@ -341,13 +354,25 @@ fun AppRoot() {
         }
         when (tabIndex) {
             0 -> ScanTab()
-            else -> ToolsTab(resetTrigger = toolsClickCounter)
+            else -> ToolsTab(
+                resetTrigger = toolsClickCounter,
+                isPurchased = isPurchased,
+                productPrice = productPrice,
+                onPurchaseClick = {
+                    activity?.let { billingManager.launchPurchaseFlow(it) }
+                }
+            )
         }
     }
 }
 
 @Composable
-fun ToolsTab(resetTrigger: Int = 0) {
+fun ToolsTab(
+    resetTrigger: Int = 0,
+    isPurchased: Boolean = false,
+    productPrice: String? = null,
+    onPurchaseClick: () -> Unit = {}
+) {
     var selectedTool by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(resetTrigger) {
@@ -359,6 +384,7 @@ fun ToolsTab(resetTrigger: Int = 0) {
         "Ping" -> PingTab()
         "PortScanner" -> PortScannerTab()
         "WiFi" -> WiFiTab()
+        "About" -> AboutScreen()
         else -> {
             Column(
                 modifier = Modifier
@@ -399,7 +425,87 @@ fun ToolsTab(resetTrigger: Int = 0) {
                     enabled = true,
                     onClick = { selectedTool = "WiFi" }
                 )
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                )
+
+                // Unlock Full Version - only show if NOT purchased
+                if (!isPurchased) {
+                    UnlockMenuItem(
+                        price = productPrice ?: "One-time purchase",
+                        onClick = onPurchaseClick
+                    )
+                }
+
+                ToolMenuItem(
+                    title = "About",
+                    description = "App info, privacy policy, and support",
+                    enabled = true,
+                    onClick = { selectedTool = "About" }
+                )
             }
+        }
+    }
+}
+
+@Composable
+fun UnlockMenuItem(
+    price: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        onClick = onClick,
+        colors = CardDefaults.cardColors(
+            containerColor = androidx.compose.ui.graphics.Color(0xFF000099)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Unlock icon
+            Surface(
+                modifier = Modifier.size(40.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.2f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = "\uD83D\uDD13", // Unlock emoji
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Unlock Full Version",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = androidx.compose.ui.graphics.Color.White
+                )
+                Text(
+                    text = price,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f)
+                )
+            }
+
+            // Arrow indicator
+            Text(
+                text = "\u203A",
+                style = MaterialTheme.typography.headlineMedium,
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+            )
         }
     }
 }
@@ -1897,6 +2003,7 @@ fun LegendItemLarge(
 
 @Composable
 fun PaywallScreen(
+    price: String = "$9.99",
     onPurchase: () -> Unit,
     onRestorePurchase: () -> Unit
 ) {
@@ -1949,7 +2056,7 @@ fun PaywallScreen(
                     contentPadding = PaddingValues(vertical = 16.dp)
                 ) {
                     Text(
-                        text = "Purchase for \$9.99",
+                        text = "Purchase for $price",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
